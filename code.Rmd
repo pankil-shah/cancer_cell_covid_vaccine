@@ -1,0 +1,914 @@
+```{r setup, include=FALSE}
+
+library(data.table)
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(stringr)
+library(FSA)
+library(dunn.test)
+library(Epi)
+library(epitools)
+```
+
+
+```{r, results='markup'}
+dt = readRDS("data_out/dt.RDS"); dt[,.N, vaccine]; 
+dt[,.N, .(record_id,vaccine)][,.N,vaccine]
+```
+
+# subsets
+
+```{r, results='markup'}
+dt.use = dt[is.na(exclude),]; dt.use[,.N, vaccine]; dt.use[,.N, .(record_id,vaccine)][,.N,vaccine]
+```
+
+Use for demographics table:
+```{r, results='markup'}
+dt.demo = dt.use[time_point == "Baseline"]
+```
+
+Use for treatment table:
+```{r}
+dt.rx = 
+    melt( dt.demo
+      , id.vars = c("mrn","vaccine")
+      , measure.vars = c("treatment_type","treatment_type_2", "treatment_type_3")
+      , variable.name = "del"
+      , value.name = "treatment"
+      )
+
+dt.rx[ treatment == "",.N, vaccine]
+dt.rx = dt.rx[ treatment != ""]
+head(dt.rx)
+
+dt.rx[, treatment_2 := treatment]
+
+dt.rx[treatment %in% c("anti-CD-38 antibody","RANKL monoclonal","anti-HER antibody","anti-VEGF antibody","anti-CD-20 antibody")
+      , treatment_2 := "monoclonal antibody"]
+
+dt.rx[, treatment_2 := 
+          factor(treatment_2
+                 , levels = c("clinical surveillance","endocrine","kinase inhibitor","immuno- therapy","cytotoxic","monoclonal antibody","unknown")
+                 , ordered = TRUE)
+      ]
+dt.rx[,.N,treatment_2]
+```
+
+
+```{r}
+dt.rx.titer =
+    merge(dt.rx
+          , dt.use[, .(mrn,time_point,titer,titer_cat)]
+          , by = "mrn")
+```
+
+
+# Table 2
+
+Rows per timepoint:
+```{r, results='markup'}
+dt.use[time_point != "Baseline", .N , keyby = .(time_point, titer_cat)]
+```
+
+## Overall
+
+```{r, results='markup'}
+merge(
+dt.use[time_point != "Baseline" & titer_cat == "positive", .(positive = .N) , keyby = .(time_point)]  ,
+dt.use[time_point != "Baseline" & !is.na(titer)
+       , .( denominator = .N
+           , median = round( median(titer) )
+           , ll     = round( quantile(titer, probs = c(0.25)) )
+           , ul     = round( quantile(titer, probs = c(0.75)) )
+          )
+      , keyby = .(time_point) ] ,
+by = c("time_point")
+)[, .(time_point
+      , positive = paste0( positive, "/", denominator, " (", percentage = round(100*positive/denominator), "%)" )
+      , titer = paste0(median, " ( ", ll, " - ", ul, " )" ) )]
+```
+
+Compare the sero-conversation between the time-points.
+```{r, results='markup'}
+fisher.test(tab)
+fisher.test(tab, alternative = "less")
+rm(tab)
+```
+
+Compare the titer between the time-points.
+```{r, results='markup'}
+dat = dt.use[time_point != "Baseline" & !is.na(titer), .(time_point = factor(time_point, ordered = FALSE), titer) ]
+# kruskal-Wallis
+kruskal.test( formula = titer ~ time_point, data = dat )
+dunn.test(x = dat$titer, g = dat$time_point)
+# dunnTest(titer ~ time_point, data = dat, method="bh" ) 
+```
+
+
+## Vaccine
+```{r, results='markup'}
+merge(
+dt.use[time_point != "Baseline" & titer_cat == "positive", .(positive = .N) , keyby = .(time_point, vaccine)]  ,
+dt.use[time_point != "Baseline" & !is.na(titer)
+       , .( denominator = .N
+           , median = round( median(titer) )
+           , ll     = round( quantile(titer, probs = c(0.25)) )
+           , ul     = round( quantile(titer, probs = c(0.75)) )
+          )
+      , keyby = .(time_point, vaccine) ] ,
+by = c("time_point","vaccine")
+)[, .(time_point
+      , vaccine
+      , positive = paste0( positive, "/", denominator, " (", percentage = round(100*positive/denominator), "%)" )
+      , titer = paste0(median, " ( ", ll, " - ", ul, " )" ) )]
+```
+
+Compare the sero-conversation between the vaccines stratified by time-points.
+\\
+1st time-point:
+```{r, results='markup'}
+p1 = 24; p2 = 74; d1 = 29; d2 = 92
+n1 = d1 - p1; n2 = d2 - p2
+tab <-
+    matrix(c(p1, p2, n1, n2)
+           , nrow = 2
+           , dimnames = list(c("BNT162b2", "mRNA-1273"), c("positive", "negative"))
+    ); tab
+fisher.test(tab)
+rm(tab)
+```
+
+
+2nd time-point:
+```{r, results='markup'}
+p1 = 28; p2 = 88; d1 = 30; d2 = 93
+n1 = d1 - p1; n2 = d2 - p2
+tab <-
+    matrix(c(p1, p2, n1, n2)
+           , nrow = 2
+           , dimnames = list(c("BNT162b2", "mRNA-1273"), c("positive", "negative"))
+    ); tab
+fisher.test(tab)
+rm(tab)
+```
+
+Compare the titer between the vaccines stratified by time-points.
+\\
+Post 1st dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 1st dose" & !is.na(titer), .(vaccine = factor(vaccine, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ vaccine, data = dat )
+```
+
+Post 2nd dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 2nd dose" & !is.na(titer), .(vaccine = factor(vaccine, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ vaccine, data = dat )
+```
+
+
+
+## age
+
+```{r, results='markup'}
+merge(
+dt.use[time_point != "Baseline" & titer_cat == "positive", .(positive = .N) , keyby = .(time_point, age_binary)]  ,
+dt.use[time_point != "Baseline" & !is.na(titer)
+       , .( denominator = .N
+           , median = round( median(titer) )
+           , ll     = round( quantile(titer, probs = c(0.25)) )
+           , ul     = round( quantile(titer, probs = c(0.75)) )
+          )
+      , keyby = .(time_point, age_binary) ] ,
+by = c("time_point","age_binary")
+)[, .(time_point
+      , age_binary
+      , positive = paste0( positive, "/", denominator, " (", percentage = round(100*positive/denominator), "%)" )
+      , titer = paste0(median, " ( ", ll, " - ", ul, " )" ) )]
+```
+
+
+Compare the sero-conversation between the age stratified by time-points.
+\\
+1st time-point:
+```{r, results='markup'}
+p1 = 54; d1 = 64; p2 = 44; d2 = 57;   n1 = d1 - p1; n2 = d2 - p2
+tab <- matrix(c(p1, p2, n1, n2), nrow = 2, dimnames = list(c("younger than 65", "65 and older"), c("positive", "negative"))); tab
+fisher.test(tab); rm(tab)
+```
+
+2nd time-point:
+```{r, results='markup'}
+p1 = 64; d1 = 66; p2 = 52; d2 = 57;   n1 = d1 - p1; n2 = d2 - p2
+tab <- matrix(c(p1, p2, n1, n2), nrow = 2, dimnames = list(c("younger than 65", "65 and older"), c("positive", "negative"))); tab
+fisher.test(tab); rm(tab)
+```
+
+Compare the titer between the ages stratified by time-points.
+\\
+Post 1st dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 1st dose" & !is.na(titer), .(age_binary = factor(age_binary, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ age_binary, data = dat )
+```
+
+Post 2nd dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 2nd dose" & !is.na(titer), .(vaccine = factor(vaccine, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ vaccine, data = dat )
+```
+
+
+
+
+
+
+
+
+
+
+
+## sex
+```{r, results='markup'}
+merge(
+dt.use[time_point != "Baseline" & titer_cat == "positive", .(positive = .N) , keyby = .(time_point, sex)]  ,
+dt.use[time_point != "Baseline" & !is.na(titer)
+       , .( denominator = .N
+           , median = round( median(titer) )
+           , ll     = round( quantile(titer, probs = c(0.25)) )
+           , ul     = round( quantile(titer, probs = c(0.75)) )
+          )
+      , keyby = .(time_point, sex) ] ,
+by = c("time_point","sex")
+)[, .(time_point
+      , sex
+      , positive = paste0( positive, "/", denominator, " (", percentage = round(100*positive/denominator), "%)" )
+      , titer = paste0(median, " ( ", ll, " - ", ul, " )" ) )]
+```
+
+Compare the sero-conversation between the age stratified by time-points.
+\\
+1st time-point:
+```{r, results='markup'}
+p1 = 53; d1 = 69; p2 = 45; d2 = 52;   n1 = d1 - p1; n2 = d2 - p2
+tab <- matrix(c(p1, p2, n1, n2), nrow = 2, dimnames = list(c("male", "female"), c("positive", "negative"))); tab
+fisher.test(tab); rm(tab)
+```
+
+2nd time-point:
+```{r, results='markup'}
+p1 = 64; d1 = 69; p2 = 52; d2 = 54;   n1 = d1 - p1; n2 = d2 - p2
+tab <- matrix(c(p1, p2, n1, n2), nrow = 2, dimnames = list(c("male", "female"), c("positive", "negative"))); tab
+fisher.test(tab); rm(tab)
+```
+
+Compare the titer between the ages stratified by time-points.
+\\
+Post 1st dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 1st dose" & !is.na(titer), .(sex = factor(sex, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ sex, data = dat )
+```
+
+Post 2nd dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 2nd dose" & !is.na(titer), .(sex = factor(sex, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ sex, data = dat )
+```
+
+
+
+
+
+
+
+
+
+## race_ethnicity
+```{r, results='markup'}
+merge(
+dt.use[time_point != "Baseline" & titer_cat == "positive", .(positive = .N) , keyby = .(time_point, race_ethnicity)]  ,
+dt.use[time_point != "Baseline" & !is.na(titer)
+       , .( denominator = .N
+           , median = round( median(titer) )
+           , ll     = round( quantile(titer, probs = c(0.25)) )
+           , ul     = round( quantile(titer, probs = c(0.75)) )
+          )
+      , keyby = .(time_point, race_ethnicity) ] ,
+by = c("time_point","race_ethnicity")
+)[, .(time_point
+      , race_ethnicity
+      , positive = paste0( positive, "/", denominator, " (", percentage = round(100*positive/denominator), "%)" )
+      , titer = paste0(median, " ( ", ll, " - ", ul, " )" ) )]
+```
+
+
+Compare the sero-conversation between the race stratified by time-points.
+\\
+1st time-point:
+```{r, results='markup'}
+p1 = 79; d1 = 100; p2 = 18; d2 = 19; p3 = 1; d3 = 2;   n1 = d1 - p1; n2 = d2 - p2; n3 = d3 - p3
+tab <- matrix(c(p1, p2, p3, n1, n2, n3), nrow = 3, dimnames = list(c("NHW", "Hispanic", "Black"), c("positive", "negative"))); tab
+fisher.test(tab); rm(tab)
+```
+
+2nd time-point:
+```{r, results='markup'}
+p1 = 96; d1 = 102; p2 = 18; d2 = 18; p3 = 2; d3 = 3;   n1 = d1 - p1; n2 = d2 - p2; n3 = d3 - p3
+tab <- matrix(c(p1, p2, p3, n1, n2, n3), nrow = 3, dimnames = list(c("NHW", "Hispanic", "Black"), c("positive", "negative"))); tab
+fisher.test(tab); rm(tab)
+```
+
+Compare the titer between the race stratified by time-points.
+\\
+Post 1st dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 1st dose" & !is.na(titer), .(race_ethnicity = factor(race_ethnicity, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ race_ethnicity, data = dat )
+```
+
+Post 2nd dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 2nd dose" & !is.na(titer), .(race_ethnicity = factor(race_ethnicity, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ race_ethnicity, data = dat )
+```
+
+
+
+
+
+
+
+## cancer_binary
+```{r, results='markup'}
+merge(
+dt.use[time_point != "Baseline" & titer_cat == "positive", .(positive = .N) , keyby = .(time_point, cancer_binary)]  ,
+dt.use[time_point != "Baseline" & !is.na(titer)
+       , .( denominator = .N
+           , median = round( median(titer) )
+           , ll     = round( quantile(titer, probs = c(0.25)) )
+           , ul     = round( quantile(titer, probs = c(0.75)) )
+          )
+      , keyby = .(time_point, cancer_binary) ] ,
+by = c("time_point","cancer_binary")
+)[, .(time_point
+      , cancer_binary
+      , positive = paste0( positive, "/", denominator, " (", percentage = round(100*positive/denominator), "%)" )
+      , titer = paste0(median, " ( ", ll, " - ", ul, " )" ) )]
+```
+
+
+Compare the sero-conversation between the cancer stratified by time-points.
+\\
+1st time-point:
+```{r, results='markup'}
+p1 = 80; d1 = 96; p2 = 18; d2 = 25;   n1 = d1 - p1; n2 = d2 - p2
+tab <- matrix(c(p1, p2, n1, n2), nrow = 2, dimnames = list(c("solid tumor", "hematologic"), c("positive", "negative"))); tab
+fisher.test(tab); rm(tab)
+```
+
+2nd time-point:
+```{r, results='markup'}
+p1 = 99; d1 = 101; p2 = 17; d2 = 22;   n1 = d1 - p1; n2 = d2 - p2
+tab <- matrix(c(p1, p2, n1, n2), nrow = 2, dimnames = list(c("solid tumor", "hematologic"), c("positive", "negative"))); tab
+fisher.test(tab); rm(tab)
+```
+
+Compare the titer between the cancer stratified by time-points.
+\\
+Post 1st dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 1st dose" & !is.na(titer), .(cancer_binary = factor(cancer_binary, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ cancer_binary, data = dat )
+```
+
+Post 2nd dose
+```{r, results='markup'}
+dat = dt.use[time_point == "Post 2nd dose" & !is.na(titer), .(cancer_binary = factor(cancer_binary, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ cancer_binary, data = dat )
+```
+
+
+
+
+
+
+
+
+
+## treatment
+
+```{r, results='markup'}
+merge(
+dt.rx.titer[time_point != "Baseline" & titer_cat == "positive", .(positive = .N) , keyby = .(time_point, treatment)]  ,
+dt.rx.titer[time_point != "Baseline" & !is.na(titer)
+       , .( denominator = .N
+           , median = round( median(titer) )
+           , ll     = round( quantile(titer, probs = c(0.25)) )
+           , ul     = round( quantile(titer, probs = c(0.75)) )
+          )
+      , keyby = .(time_point, treatment) ] ,
+by = c("time_point","treatment"), all = T
+)[, .(time_point
+      , treatment
+      , positive = paste0( positive, "/", denominator, " (", percentage = round(100*positive/denominator), "%)" )
+      , titer = paste0(median, " ( ", ll, " - ", ul, " )" ) )]
+```
+
+
+```{r, results='markup'}
+merge(
+dt.rx.titer[time_point != "Baseline" & titer_cat == "positive", .(positive = .N) , keyby = .(time_point, treatment_2)]  ,
+dt.rx.titer[time_point != "Baseline" & !is.na(titer)
+       , .( denominator = .N
+           , median = round( median(titer) )
+           , ll     = round( quantile(titer, probs = c(0.25)) )
+           , ul     = round( quantile(titer, probs = c(0.75)) )
+          )
+      , keyby = .(time_point, treatment_2) ] ,
+by = c("time_point","treatment_2"), all = T
+)[, .(time_point
+      , treatment_2
+      , positive = paste0( positive, "/", denominator, " (", percentage = round(100*positive/denominator), "%)" )
+      , titer = paste0(median, " ( ", ll, " - ", ul, " )" ) )]
+```
+
+
+Compare the sero-conversation between the treatment stratified by time-points.
+\\
+1st time-point:
+```{r, results='markup'}
+p1 = 3; d1 = 4; p2 = 0; d2 = 4; p3 = 1; d3 = 1; p4 = 2; d4 = 2; p5 = 4; d5 = 5; p6 = 38; d6 = 44; p7= 20; d7 = 29; p8 = 15; d8 = 16;  p9 = 11; d9 = 13;  p10 = 13; d10 = 15; 
+n1 = d1 - p1; n2 = d2 - p2; n3 = d3 - p3; n4 = d4 - p4; n5 = d5 - p5; n6 = d6 - p6; n7 = d7 - p7; n8 = d8 - p8; n9 = d9 - p9; n10 = d10 - p10;
+dt.rx.titer[,.N,keyby = treatment][1:10,treatment]
+tab <- matrix(c(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10, n1,n2,n3,n4,n5,n6,n7,n8,n9,n10), nrow = 10
+              , dimnames = list(dt.rx.titer[,.N,keyby = treatment][1:10,treatment], c("positive", "negative"))); tab
+fisher.test(tab); #rm(tab)
+```
+
+```{r}
+library("RVAideMemoire")
+fisher.multcomp(tab, p.method = "BH")
+```
+
+2nd time-point:
+```{r, results='markup'}
+p1 = 3; d1 = 3; p2 = 0; d2 = 4; p3 = 1; d3 = 1; p4 = 1; d4 = 1; p5 = 5; d5 = 5; p6 = 44; d6 = 45; p7= 28; d7 = 30; p8 = 18; d8 = 18;  p9 = 13; d9 = 14;  p10 = 12; d10 = 13; 
+n1 = d1 - p1; n2 = d2 - p2; n3 = d3 - p3; n4 = d4 - p4; n5 = d5 - p5; n6 = d6 - p6; n7 = d7 - p7; n8 = d8 - p8; n9 = d9 - p9; n10 = d10 - p10;
+dt.rx.titer[,.N,keyby = treatment][1:10,treatment]
+tab <- matrix(c(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10, n1,n2,n3,n4,n5,n6,n7,n8,n9,n10), nrow = 10
+              , dimnames = list(dt.rx.titer[,.N,keyby = treatment][1:10,treatment], c("positive", "negative"))); tab
+fisher.test(tab); #rm(tab)
+```
+
+```{r}
+library("RVAideMemoire")
+fisher.multcomp(tab, p.method = "BH")
+```
+
+Compare the titer between the treatment stratified by time-points.
+\\
+Post 1st dose
+```{r, results='markup'}
+dat = dt.rx.titer[time_point == "Post 1st dose" & !is.na(titer), .(treatment= factor(treatment, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ treatment, data = dat )
+dunnTest(titer ~ treatment, data = dat, method="bh" ) 
+data.table(dunnTest(titer ~ treatment, data = dat, method="bh" )$res)[P.adj < 0.05, .(Comparison, P.adj)]
+```
+
+Post 2nd dose
+```{r, results='markup'}
+dat = dt.rx.titer[time_point == "Post 2nd dose" & !is.na(titer), .(treatment= factor(treatment, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ treatment, data = dat )
+dunnTest(titer ~ treatment, data = dat, method="bh" ) 
+data.table(dunnTest(titer ~ treatment, data = dat, method="bh" )$res)[P.adj < 0.05, .(Comparison, P.adj)]
+```
+
+## Treatment 2
+
+Compare the sero-conversation between the treatment stratified by time-points.
+\\
+1st time-point:
+```{r, results='markup'}
+p1 = 10; d1 = 16; p6 = 38; d6 = 44; p7= 20; d7 = 29; p8 = 15; d8 = 16;  p9 = 11; d9 = 13;  p10 = 13; d10 = 15; 
+n1 = d1 - p1; n6 = d6 - p6; n7 = d7 - p7; n8 = d8 - p8; n9 = d9 - p9; n10 = d10 - p10;
+dt.rx.titer[,.N,keyby = treatment][c(1,6:10),treatment]
+tab <- matrix(c(p1,p6,p7,p8,p9,p10, n1,n6,n7,n8,n9,n10), nrow = 6
+              , dimnames = list(dt.rx.titer[,.N,keyby = treatment][c(1,6:10),treatment], c("positive", "negative"))); tab
+fisher.test(tab); #rm(tab)
+```
+
+```{r}
+library("RVAideMemoire")
+fisher.multcomp(tab, p.method = "BH")
+```
+
+2nd time-point:
+```{r, results='markup'}
+p1 = 10; d1 = 14; p6 = 44; d6 = 45; p7= 28; d7 = 30; p8 = 18; d8 = 18;  p9 = 13; d9 = 14;  p10 = 12; d10 = 13; 
+n1 = d1 - p1; n6 = d6 - p6; n7 = d7 - p7; n8 = d8 - p8; n9 = d9 - p9; n10 = d10 - p10;
+dt.rx.titer[,.N,keyby = treatment][c(1,6:10),treatment]
+tab <- matrix(c(p1,p6,p7,p8,p9,p10, n1,n6,n7,n8,n9,n10), nrow = 6
+              , dimnames = list(dt.rx.titer[,.N,keyby = treatment][c(1,6:10),treatment], c("positive", "negative"))); tab
+fisher.test(tab); #rm(tab)
+```
+
+```{r}
+library("RVAideMemoire")
+fisher.multcomp(tab, p.method = "BH")
+```
+
+Compare the titer between the treatment stratified by time-points.
+\\
+Post 1st dose
+```{r, results='markup'}
+dat = dt.rx.titer[time_point == "Post 1st dose" & !is.na(titer), .(treatment_2= factor(treatment_2, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ treatment_2, data = dat )
+dunnTest(titer ~ treatment_2, data = dat, method="bh" ) 
+data.table(dunnTest(titer ~ treatment_2, data = dat, method="bh" )$res)[P.adj < 0.05, .(Comparison, P.adj)]
+```
+
+Post 2nd dose
+```{r, results='markup'}
+dat = dt.rx.titer[time_point == "Post 2nd dose" & !is.na(titer), .(treatment_2= factor(treatment_2, ordered = FALSE), titer) ]
+kruskal.test( formula = titer ~ treatment_2, data = dat )
+dunnTest(titer ~ treatment_2, data = dat, method="bh" ) 
+data.table(dunnTest(titer ~ treatment_2, data = dat, method="bh" )$res)[P.adj < 0.05, .(Comparison, P.adj)]
+```
+
+
+
+
+
+
+
+
+
+
+# Table 1
+
+
+## Age
+
+```{r, results='markup'}
+stat.table(
+	index = list( "vaccine" = vaccine ),
+	contents=list( "freq" = count(), "mean" = mean(age), "std.dev" = sd(age), "median" = median(age) ),
+	data=dt.demo,
+    margins=c(TRUE)
+	)
+```
+
+__Interquartile range__
+
+Overall
+```{r, results='markup'}
+quantile(dt.demo[,age], probs = c(0.25,0.5,0.75))
+```
+
+mRNA-1273
+```{r, results='markup'}
+quantile(dt.demo[vaccine == "mRNA-1273",age], probs = c(0.25,0.5,0.75))
+```
+
+BNT162b2
+```{r, results='markup'}
+quantile(dt.demo[vaccine == "BNT162b2",age], probs = c(0.25,0.5,0.75))
+```
+
+## Gender
+
+```{r, results='markup'}
+stat.table(
+	index = list( "gender" = sex, "vaccine" = vaccine ),
+	contents=list( count(), percent(sex) ),
+	data=dt.demo,
+    margins=c(TRUE, TRUE)
+	)
+```
+
+## Race/Ethnicity
+
+```{r, results='markup'}
+stat.table(
+	index = list( "Race/Ethnicity" = race_ethnicity, "vaccine" = vaccine ),
+	contents=list( count(), percent(race_ethnicity) ),
+	data=dt.demo,
+    margins=c(TRUE, TRUE)
+	)
+```
+
+
+## Response measurement time range
+
+```{r, results='markup'}
+stat.table(
+	index = list( "vaccine" = vaccine ),
+	contents=list( "freq" = count(), "mean" = mean(days_to_titer), "std.dev" = sd(days_to_titer), "median" = median(days_to_titer) ),
+	data=dt.use[time_point == "Post 2nd dose",],
+    margins=c(TRUE)
+	)
+```
+
+__Interquartile range__
+
+Overall
+```{r, results='markup'}
+quantile(dt.use[time_point == "Post 2nd dose", days_to_titer], probs = c(0.25,0.5,0.75))
+```
+
+mRNA-1273
+```{r, results='markup'}
+quantile(dt.use[time_point == "Post 2nd dose" & vaccine == "mRNA-1273", days_to_titer], probs = c(0.25,0.5,0.75))
+```
+
+BNT162b2
+```{r, results='markup'}
+quantile(dt.use[time_point == "Post 2nd dose" & vaccine == "BNT162b2",days_to_titer], probs = c(0.25,0.5,0.75))
+```
+
+
+## Malignancy Grouper
+
+```{r, results='markup'}
+stat.table(
+	index = list( "malignancy" = cancer_binary, "vaccine" = vaccine ),
+	contents=list( count(), percent(cancer_binary) ),
+	data=dt.demo,
+    margins=c(TRUE, TRUE)
+	)
+```
+
+## Malignancy System
+
+```{r, results='markup'}
+stat.table(
+	index = list( "malignancy system" = cancer_system, "vaccine" = vaccine ),
+	contents=list( count(), percent(cancer_system) ),
+	data=dt.demo,
+    margins=c(TRUE, TRUE)
+	)
+```
+
+## Treatment
+
+
+
+
+```{r, results='markup'}
+stat.table(
+	index = list( "treatment" = treatment, "vaccine" = vaccine ),
+	contents=list( count(), percent(treatment) ),
+	data=dt.rx,
+    margins=c(TRUE, TRUE)
+	)
+```
+
+
+```{r, results='markup'}
+stat.table(
+	index = list( "treatment" = treatment_2, "vaccine" = vaccine ),
+	contents=list( count(), percent(treatment) ),
+	data=dt.rx,
+    margins=c(TRUE, TRUE)
+	)
+```
+
+
+# Graphs
+
+```{r}
+c.2colors = c("#aac872", "#f5af5c")
+c.2greys  = c("#aac872", "#de425b")
+
+c.2colors = c("grey75","grey75")
+c.2greys = c("grey70","grey30")
+```
+
+## Vaccine response overall
+
+```{r}
+dat = dt.use[time_point != "Baseline" & !is.na(titer)]
+dat[, time_point := factor(time_point, levels = c("Post 1st dose","Post 2nd dose"), labels = c("Timepoint 1","Timepoint 2"))]
+str(dat$time_point)
+```
+
+```{r}
+gg.1 =
+    ggplot(dat, aes(x=time_point, y=titer, fill=time_point, color = time_point)) +
+    # geom_violin(width = 1) +
+    geom_jitter(width = 0.25, height = 0.25, size = 1, alpha = 0.3, color = "grey50", fill = "grey 80") +
+    geom_boxplot(width=0.25, color="black", alpha=0, outlier.colour = NA) +
+    #scale_fill_viridis(discrete = TRUE) +
+    theme_classic() +
+    theme(
+      legend.position="none",
+      text = element_text(size=10)
+      # plot.margin=unit(c(1,0.2,0.2,0.2),"cm")
+      # axis.title.x = element_text(margin = unit(c(0.5,0,0,0),"cm"))
+    ) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 11)) +
+    scale_y_continuous(breaks=seq(0,2500,500)) +
+    scale_color_manual(values=c.2colors) +
+    scale_fill_manual(values=c.2colors) +
+    # ggtitle("Response") +
+    xlab(label = NULL) +
+    ylab("Anti-SARS-CoV-2 S (U/mL)")
+
+gg.1 + 
+    annotate("segment", x = 1, xend = 2, y = 2600, yend = 2600, colour = "grey 30", size = 0.5 ) +
+    annotate("text", x = 1.5, y = 2700, label = "paste(italic(p), \"< 0.001\")", parse = TRUE, size = 2) +
+    annotate("text", x = 1, y = - 100, label = "N = 121", size = 2) +
+    annotate("text", x = 2, y = - 100, label = "N = 123", size = 2)
+ggsave( "01_overall.pdf", path = "./plot", width = 3, height = 3, units = "in", dpi = 500)
+rm(gg.1)
+```
+
+
+
+## Vaccine response by vaccine
+```{r}
+gg.1 =
+    ggplot(dat, aes(x=vaccine, y=titer, fill=vaccine, color = vaccine)) +
+    # geom_violin(width = 0.9) +
+    geom_jitter(width = 0.25, height = 0.25, size = 1, alpha = 0.3, color = "grey50", fill = "grey 80") +
+    geom_boxplot(width=0.25, color="black", alpha=0, outlier.colour = NA) +
+    #scale_fill_viridis(discrete = TRUE) +
+    theme_classic() +
+    theme(
+      legend.position="none",
+      text = element_text(size=9)
+    ) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 4)) +
+    scale_y_continuous(breaks=seq(0,2500,500)) +
+    scale_color_manual(values=c.2colors) +
+    scale_fill_manual(values=c.2colors) +
+    # ggtitle("Response by vaccine type") +
+    xlab(label = NULL) +
+    ylab("Anti-SARS-CoV-2 S (U/mL)") + 
+    facet_wrap( ~ time_point # , "    p=", pvalue
+                #, scales = "free"
+                #, strip.position = "left"
+                , ncol = 2)
+gg.1 +
+    annotate("segment", x = 1, xend = 2, y = 2600, yend = 2600, colour = "grey 30", size = 0.5 ) +
+    annotate("text", x = 1.5, y = 2700, label = "paste(italic(p), \"=      \")", parse = TRUE, size = 2) +
+    annotate("text", x = 1, y = - 100, label = "N =      ", size = 2) +
+    annotate("text", x = 2, y = - 100, label = "N =      ", size = 2)
+ggsave( "02_vaccine_type.pdf", path = "./plot", width = 3, height = 3, units = "in", dpi = 500)
+rm(gg.1)
+```
+
+
+## Vaccine response by gender
+```{r}
+gg.1 =
+    ggplot(dat, aes(x=sex, y=titer, fill=sex, color = sex)) +
+    # geom_violin(width = 0.9) +
+    geom_jitter(width = 0.25, height = 0.25, size = 1, alpha = 0.3, color = "grey50", fill = "grey 80") +
+    geom_boxplot(width=0.25, color="black", alpha=0, outlier.colour = NA) +
+    #scale_fill_viridis(discrete = TRUE) +
+    theme_classic() +
+    theme(
+      legend.position="none",
+      text = element_text(size=10)
+    ) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 11)) +
+    scale_y_continuous(breaks=seq(0,2500,500)) +
+    scale_color_manual(values=c.2colors) +
+    scale_fill_manual(values=c.2colors) +
+    # ggtitle("Response by gender") +
+    xlab(label = NULL) +
+    ylab("Anti-SARS-CoV-2 S (U/mL)") + 
+    facet_wrap( ~ time_point # , "    p=", pvalue
+                #, scales = "free"
+                #, strip.position = "left"
+                , ncol = 2)
+gg.1 +
+    annotate("segment", x = 1, xend = 2, y = 2600, yend = 2600, colour = "grey 30", size = 0.5 ) +
+    annotate("text", x = 1.5, y = 2700, label = "paste(italic(p), \"=      \")", parse = TRUE, size = 2) +
+    annotate("text", x = 1, y = - 100, label = "N =      ", size = 2) +
+    annotate("text", x = 2, y = - 100, label = "N =      ", size = 2)
+ggsave( "03_gender.pdf", path = "./plot", width = 3, height = 3, units = "in", dpi = 500)
+rm(gg.1)
+```
+
+
+## Vaccine response by cancer
+```{r}
+gg.1 =
+    ggplot(dat, aes(x=cancer_binary, y=titer, fill=cancer_binary, color=cancer_binary)) +
+    # geom_violin(width = 0.9) +
+    geom_jitter(width = 0.25, height = 0.25, size = 1, alpha = 0.3, color = "grey50", fill = "grey 80") +
+    geom_boxplot(width=0.25, color="black", alpha=0, outlier.colour = NA) +
+    #scale_fill_viridis(discrete = TRUE) +
+    theme_classic() +
+    theme(
+      legend.position="none",
+      text = element_text(size=10)
+    ) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 9)) +
+    scale_y_continuous(breaks=seq(0,2500,500)) +
+    scale_color_manual(values=c.2colors) +
+    scale_fill_manual(values=c.2colors) +
+    # ggtitle("Response by malignancy") +
+    xlab(label = NULL) +
+    ylab("Anti-SARS-CoV-2 S (U/mL)") + 
+    facet_wrap( ~ time_point # , "    p=", pvalue
+                #, scales = "free"
+                #, strip.position = "left"
+                , ncol = 2)
+gg.1 +
+    annotate("segment", x = 1, xend = 2, y = 2600, yend = 2600, colour = "grey 30", size = 0.5 ) +
+    annotate("text", x = 1.5, y = 2700, label = "paste(italic(p), \"=      \")", parse = TRUE, size = 2) +
+    annotate("text", x = 1, y = - 100, label = "N =      ", size = 2) +
+    annotate("text", x = 2, y = - 100, label = "N =      ", size = 2)
+ggsave( "04_tumor.pdf", path = "./plot", width = 3, height = 3, units = "in", dpi = 500)
+rm(gg.1)
+```
+
+
+## Vaccine response by treatment
+
+
+```{r}
+dat = dt.rx.titer[time_point == "Post 2nd dose" & treatment_2 != "unknown" & !is.na(titer)]
+gg.1 =
+    ggplot(dat, aes(x=treatment_2, y=titer, fill=treatment_2, color = treatment_2)) +
+    # geom_violin(width = 0.9) +
+    geom_jitter(width = 0.25, height = 0.25, size = 1, alpha = 0.3, color = "grey50", fill = "grey 80") +
+    geom_boxplot(width=0.25, color="black", alpha=0, outlier.colour = NA) +
+    #scale_fill_viridis(discrete = TRUE) +
+    theme_classic() +
+    theme(
+      legend.position="none",
+      text = element_text(size=10)
+    ) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 11)) +
+    scale_y_continuous(breaks=seq(0,2500,500)) +
+    # scale_color_manual(values=c("#00876c","#61a96e","#aac872","#f7e382","#f5af5c","#ea784d")) +
+    # scale_fill_manual(values=c("#00876c","#61a96e","#aac872","#f7e382","#f5af5c","#ea784d")) +
+    # ggtitle("Response by treatment") +
+    xlab("Anti-Cancer Therapy") +
+    ylab("Anti-SARS-CoV-2 S (U/mL)") 
+
+gg.1 +
+    annotate("segment", x = 1, xend = 6, y = 3500, yend = 3500, colour = "grey 30", size = 0.5 ) +
+    annotate("text", x = 5.7, y = 3600, label = "paste(italic(p), \"=      \")", parse = TRUE, size = 2) +
+    annotate("segment", x = 2, xend = 6, y = 3300, yend = 3300, colour = "grey 30", size = 0.5 ) +
+    annotate("text", x = 5.7, y = 3400, label = "paste(italic(p), \"=      \")", parse = TRUE, size = 2) +
+    
+    annotate("segment", x = 1, xend = 5, y = 3100, yend = 3100, colour = "grey 30", size = 0.5 ) +
+    annotate("text", x = 4.7, y = 3200, label = "paste(italic(p), \"=      \")", parse = TRUE, size = 2) +
+    annotate("segment", x = 2, xend = 5, y = 2900, yend = 2900, colour = "grey 30", size = 0.5 ) +
+    annotate("text", x = 4.7, y = 3000, label = "paste(italic(p), \"=      \")", parse = TRUE, size = 2) +
+    
+    annotate("text", x = 1, y = - 100, label = "N =      ", size = 2) +
+    annotate("text", x = 2, y = - 100, label = "N =      ", size = 2) +
+    annotate("text", x = 3, y = - 100, label = "N =      ", size = 2) +
+    annotate("text", x = 4, y = - 100, label = "N =      ", size = 2) +
+    annotate("text", x = 5, y = - 100, label = "N =      ", size = 2) +
+    annotate("text", x = 6, y = - 100, label = "N =      ", size = 2)
+ggsave( "05_treatment.pdf", path = "./plot", width = 5, height = 4, units = "in", dpi = 300)
+rm(gg.1)
+```
+
+
+
+
+
+## individual vaccine response
+
+```{r}
+dat = dt.use[!is.na(titer)]
+dat[, time_point := factor(time_point, levels = c("Baseline","Post 1st dose","Post 2nd dose"), labels = c("Baseline","Timepoint 1","Timepoint 2"))]
+# dat[,.N,.(mrn)][N==3,.N]
+# c.mrn.alltp = dat[,.N,.(mrn)][N==3,mrn]
+# dat = dat[mrn %in% c.mrn.alltp,]; dat[,.N]
+str(dat$time_point)
+```
+
+```{r}
+gg.1 =
+    ggplot(dat, aes(x = time_point, y = titer, color = vaccine, shape = vaccine)) +
+    geom_point(aes(fill = vaccine), size = 1, alpha = 0.3) +
+    geom_line(aes(group = record_id, linetype = vaccine), alpha = 0.5) +
+    theme_classic() +
+    theme( legend.position = c(0.25, 0.85)
+           , text = element_text(size=9)
+           , legend.text = element_text(size=7)
+           #, legend.text = element_text(size = 7, margin = margin( t=0, r=0, b=0, l=0, unit="in" ) )
+           , legend.spacing.y = unit(0,'in')
+           ) +
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 11)) +
+    scale_color_manual(values=c.2greys) +
+    scale_fill_manual(values=c.2greys) +
+    # ggtitle("Response for each participant") +
+    xlab(label = NULL) +
+    ylab("Anti-SARS-CoV-2 S (U/mL)")
+
+gg.1
+ggsave( "06_participant.pdf", path = "./plot", width = 3, height = 3, units = "in", dpi = 500)
+rm(gg.1)
+```
